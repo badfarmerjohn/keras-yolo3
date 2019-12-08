@@ -20,8 +20,9 @@ from keras.models import Model
 from keras.regularizers import l2
 from keras.utils.vis_utils import plot_model as plot
 
+from yolo import YOLO
 
-parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
+parser = argparse.ArgumentParser(description='Darknet To Keras/TF Converter.')
 parser.add_argument('config_path', help='Path to Darknet cfg file.')
 parser.add_argument('weights_path', help='Path to Darknet weights file.')
 parser.add_argument('output_path', help='Path to output Keras model file.')
@@ -34,6 +35,10 @@ parser.add_argument(
     '-w',
     '--weights_only',
     help='Save as Keras weights file instead of model file.',
+    action='store_true')
+parser.add_argument(
+    '--tfsm', 
+    help='Will save model as TensorFlow Saved Model instead of Keras.', 
     action='store_true')
 
 def unique_config_sections(config_file):
@@ -64,9 +69,12 @@ def _main(args):
         '.weights'), '{} is not a .weights file'.format(weights_path)
 
     output_path = os.path.expanduser(args.output_path)
-    assert output_path.endswith(
-        '.h5'), 'output path {} is not a .h5 file'.format(output_path)
-    output_root = os.path.splitext(output_path)[0]
+    if args.tfsm:
+        output_root = output_path
+    else:
+        assert output_path.endswith(
+            '.h5'), 'output path {} is not a .h5 file'.format(output_path)
+        output_root = os.path.splitext(output_path)[0]
 
     # Load weights and config.
     print('Loading weights.')
@@ -235,10 +243,34 @@ def _main(args):
                 'Unsupported section header type: {}'.format(section))
 
     # Create and save model.
-    if len(out_index)==0: out_index.append(len(all_layers)-1)
     model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
     print(model.summary())
-    if args.weights_only:
+    if len(out_index)==0: out_index.append(len(all_layers)-1)
+
+    if args.tfsm:
+        yolo_model = YOLO(model=model)
+        inputs = K.saved_model.utils.build_tensor_info(input_layer)
+        boxes, scores, classes = yolo_model.generate()
+        signature = (K.saved_model.signature_def_utils.build_signature_def(
+            inputs={K.saved_model.signature_constants.CLASSIFY_INPUTS: inputs},
+            outputs={
+                "boxes": boxes,
+                K.saved_model.signature_constants.CLASSIFY_OUTPUT_SCORES: scores,
+                K.saved_model.signature_constants.CLASSIFY_OUTPUT_CLASSES: classes
+            },
+            method_name="detect_objects"))
+        builder = K.saved_model.builder.SavedModelBuilder(args.output_path)
+        builder.add_meta_graph_and_variables(
+            yolo_model.get_session(),
+            [tf.saved_model.tag_constants.SERVING],
+            signature_def_map={
+                K.saved_model.signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
+                    signature
+            },
+            main_op=K.tables_initializer(),
+            strip_default_attrs=True)
+        builder.save()
+    elif args.weights_only:
         model.save_weights('{}'.format(output_path))
         print('Saved Keras weights to {}'.format(output_path))
     else:
