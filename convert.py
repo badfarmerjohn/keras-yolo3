@@ -11,12 +11,13 @@ import os
 from collections import defaultdict
 
 import numpy as np
+import tensorflow as tf
 from keras import backend as K
-from keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
-                          UpSampling2D, MaxPooling2D, Concatenate)
-from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.normalization import BatchNormalization
-from keras.models import Model
+from tensorflow.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
+                          UpSampling2D, MaxPooling2D, Concatenate, LeakyReLU, BatchNormalization)
+# from keras.layers.advanced_activations import LeakyReLU
+# from keras.layers.normalization import BatchNormalization
+# from keras import Model
 from keras.regularizers import l2
 from keras.utils.vis_utils import plot_model as plot
 
@@ -38,7 +39,7 @@ parser.add_argument(
     action='store_true')
 parser.add_argument(
     '--tfsm', 
-    help='Will save model as TensorFlow Saved Model instead of Keras.', 
+    help='Will save model as TensorFlow Saved Model instead of Keras model.', 
     action='store_true')
 
 def unique_config_sections(config_file):
@@ -243,33 +244,13 @@ def _main(args):
                 'Unsupported section header type: {}'.format(section))
 
     # Create and save model.
-    model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
+    model = tf.keras.Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
     print(model.summary())
     if len(out_index)==0: out_index.append(len(all_layers)-1)
 
     if args.tfsm:
         yolo_model = YOLO(model=model)
-        inputs = K.saved_model.utils.build_tensor_info(input_layer)
-        boxes, scores, classes = yolo_model.generate()
-        signature = (K.saved_model.signature_def_utils.build_signature_def(
-            inputs={K.saved_model.signature_constants.CLASSIFY_INPUTS: inputs},
-            outputs={
-                "boxes": boxes,
-                K.saved_model.signature_constants.CLASSIFY_OUTPUT_SCORES: scores,
-                K.saved_model.signature_constants.CLASSIFY_OUTPUT_CLASSES: classes
-            },
-            method_name="detect_objects"))
-        builder = K.saved_model.builder.SavedModelBuilder(args.output_path)
-        builder.add_meta_graph_and_variables(
-            yolo_model.get_session(),
-            [tf.saved_model.tag_constants.SERVING],
-            signature_def_map={
-                K.saved_model.signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
-                    signature
-            },
-            main_op=K.tables_initializer(),
-            strip_default_attrs=True)
-        builder.save()
+        tf.saved_model.save(yolo_model, output_path)
     elif args.weights_only:
         model.save_weights('{}'.format(output_path))
         print('Saved Keras weights to {}'.format(output_path))

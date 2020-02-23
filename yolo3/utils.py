@@ -5,6 +5,7 @@ from functools import reduce
 from PIL import Image
 import numpy as np
 from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
+import tensorflow as tf
 
 def compose(*funcs):
     """Compose arbitrarily many functions, evaluated left to right.
@@ -29,6 +30,19 @@ def letterbox_image(image, size):
     new_image = Image.new('RGB', size, (128,128,128))
     new_image.paste(image, ((w-nw)//2, (h-nh)//2))
     return new_image
+
+def letterbox_image_tf(image, size):
+    iw, ih = image.shape[:2]
+    w, h = size
+
+    if iw is None or ih is None:
+        return image
+
+    scale = min(w/iw, h/ih)
+    nw = int(iw*scale)
+    nh = int(ih*scale)
+    return tf.image.resize(image, [nw, nh], ResizeMethod.BICUBIC,  preserve_aspect_ratio=True, antialias=True, name='resizing')
+
 
 def rand(a=0, b=1):
     return np.random.rand()*(b-a) + a

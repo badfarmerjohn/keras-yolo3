@@ -6,29 +6,30 @@ Class definition of YOLO_v3 style detection model on image and video
 import colorsys
 import os
 from timeit import default_timer as timer
+from PIL import Image
 
 import numpy as np
 
 # Importing tensorflow normally will break the YOLO class starting
 # from tensorflow 2.0.
-# from keras import backend as K
+from keras import backend as K
 
 # However, using the below method of v1 compat tensorflow will break convert.py
 # when it tries to use YOLO to export a tensorflow serving compatible model.
-import tensorflow.compat.v1.keras.backend as K
+# import tensorflow.compat.v1.keras.backend as K
 import tensorflow as tf
-tf.compat.v1.disable_v2_behavior()
+# tf.compat.v1.disable_v2_behavior()
 
 from keras.models import load_model
 from keras.layers import Input
 from PIL import Image, ImageFont, ImageDraw
 
 from yolo3.model import yolo_eval, yolo_body, tiny_yolo_body
-from yolo3.utils import letterbox_image
+from yolo3.utils import letterbox_image, letterbox_image_tf
 import os
 from keras.utils import multi_gpu_model
 
-class YOLO(object):
+class YOLO(tf.Module):
     _defaults = {
         "model_path": 'model_data/yolo.h5',
         "anchors_path": 'model_data/yolo_anchors.txt',
@@ -37,6 +38,7 @@ class YOLO(object):
         "iou" : 0.45,
         "model_image_size" : (416, 416),
         "gpu_num" : 1,
+        "is_tfsm": False
     }
 
     @classmethod
@@ -51,12 +53,12 @@ class YOLO(object):
         self.__dict__.update(kwargs) # and update with user overrides
         self.class_names = self._get_class()
         self.anchors = self._get_anchors()
-        self.sess = K.get_session()
+        # self.sess = K.get_session()
         self.yolo_model = model
         self.boxes, self.scores, self.classes = self.generate()
 
-    def get_session(self):
-        return self.sess
+    # def get_session(self):
+    #     return self.sess
 
     def _get_class(self):
         classes_path = os.path.expanduser(self.classes_path)
@@ -76,13 +78,17 @@ class YOLO(object):
         # Load model, or construct model and load weights.
         if self.yolo_model is None:
             model_path = os.path.expanduser(self.model_path)
-            assert model_path.endswith('.h5'), 'Keras model or weights must be a .h5 file.'
+            if not self.is_tfsm:
+                assert model_path.endswith('.h5'), 'Keras model or weights must be a .h5 file.'
 
             num_anchors = len(self.anchors)
             num_classes = len(self.class_names)
             is_tiny_version = num_anchors==6 # default setting
             try:
-                self.yolo_model = load_model(model_path, compile=False)
+                if self.is_tfsm:
+                    self.yolo_model = tf.saved_model.load(model_path)
+                else:
+                    self.yolo_model = load_model(model_path, compile=False)
             except:
                 self.yolo_model = tiny_yolo_body(Input(shape=(None,None,3)), num_anchors//2, num_classes) \
                     if is_tiny_version else yolo_body(Input(shape=(None,None,3)), num_anchors//3, num_classes)
@@ -105,6 +111,7 @@ class YOLO(object):
         np.random.seed(None)  # Reset seed to default.
 
         # Generate output tensor targets for filtered bounding boxes.
+        # TF2: Maybe this isn't necessary anymore?
         self.input_image_shape = K.placeholder(shape=(2, ), dtype=tf.int32)
         if self.gpu_num>=2:
             self.yolo_model = multi_gpu_model(self.yolo_model, gpus=self.gpu_num)
@@ -112,6 +119,38 @@ class YOLO(object):
                 len(self.class_names), self.input_image_shape,
                 score_threshold=self.score, iou_threshold=self.iou)
         return boxes, scores, classes
+
+    @tf.function(input_signature=[tf.TensorSpec([None, None, 3], tf.float32)])
+    def detect_image_boxes(self, image):
+        image = tf.expand_dims(image, 0)  # Add batch dimension.
+        is_test_tensor = (image.shape[1] is None) and (image.shape[2] is None)
+        if self.model_image_size != (None, None):
+            assert self.model_image_size[0]%32 == 0, 'Multiples of 32 required'
+            assert self.model_image_size[1]%32 == 0, 'Multiples of 32 required'
+            boxed_image = letterbox_image_tf(image, tuple(reversed(self.model_image_size)))
+        else:
+            new_image_size = (image.width - (image.width % 32),
+                              image.height - (image.height % 32))
+            boxed_image = letterbox_image_tf(image, new_image_size)
+        if not is_test_tensor:
+            image_data = np.array(boxed_image, dtype='float32')
+            image_data /= 255.
+        else:
+            image_data = image
+
+        print(image_data.shape)
+
+        # out_boxes, out_scores, out_classes = self.sess.run(
+        #     [self.boxes, self.scores, self.classes],
+        #     feed_dict={
+        #         self.yolo_model.input: image_data,
+        #         self.input_image_shape: [image.size[1], image.size[0]],
+        #         K.learning_phase(): 0
+        #     })
+        image_shape = [image.shape[1], image.shape[2]] if not is_test_tensor else [1, 1]
+        return yolo_eval(self.yolo_model(image_data), self.anchors,
+                len(self.class_names), image_shape,
+                score_threshold=self.score, iou_threshold=self.iou);
 
     def detect_image(self, image):
         start = timer()

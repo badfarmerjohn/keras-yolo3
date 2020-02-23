@@ -43,6 +43,11 @@ if __name__ == '__main__':
         '--image', default=False, action="store_true",
         help='Image detection mode, will ignore all positional arguments'
     )
+
+    parser.add_argument(
+        '--is_tfsm', default=False, action="store_true",
+        help='Model is TensorFlow Serving Model (TFX).'
+    )
     '''
     Command line positional arguments -- for video detection mode
     '''
